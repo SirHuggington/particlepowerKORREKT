@@ -144,6 +144,47 @@ sfxFrostDeath.volume = 0.7;
 
 let shootCooldown = 300, playerSpeed = 0.1, powerupTimer = 0;
 let boss = null;
+// --- PLAYER INVINCIBILITY (3s) ---
+let invincibleUntil = 0;          // timestamp in ms until which player is invincible
+let invincibilityInterval = null; // interval id used for blinking effect
+
+function isInvincible() {
+  return performance.now() < invincibleUntil;
+}
+
+function startInvincibility(durationMs = 3000) {
+  invincibleUntil = performance.now() + durationMs;
+
+  // ensure player material can be made transparent for blinking
+  if (player && player.material) {
+    player.material.transparent = true;
+  }
+
+  // clear any previous blinking interval
+  if (invincibilityInterval) {
+    clearInterval(invincibilityInterval);
+    invincibilityInterval = null;
+  }
+
+  // blink the player mesh for visual feedback
+  invincibilityInterval = setInterval(() => {
+    if (!player) return;
+    // toggle visible flag (fast blink)
+    player.visible = !player.visible;
+
+    // if invincibility expired, restore normal state
+    if (!isInvincible()) {
+      clearInterval(invincibilityInterval);
+      invincibilityInterval = null;
+      player.visible = true;
+      if (player.material) {
+        player.material.transparent = false;
+        player.material.opacity = 1;
+      }
+    }
+  }, 120); // blink every 120 ms
+}
+
 
 const stageWaveCounts = [5, 6, 8, 9, 10];
 const stageNames = [
@@ -241,14 +282,27 @@ function startStage(selectedStage) {
 }
 
 function resetArenaState() {
+  // remove any bullets/enemies/powerups from scene
   bullets.forEach(b => scene.remove(b));
   enemies.forEach(e => scene.remove(e));
   enemyBullets.forEach(e => scene.remove(e));
   powerups.forEach(p => scene.remove(p));
+
+  // remove boss (supports boss.group or raw Mesh)
   if (boss) {
-    scene.remove(boss);
+    try {
+      if (boss.group) {
+        scene.remove(boss.group);
+      } else {
+        scene.remove(boss);
+      }
+    } catch (err) {
+      // ignore if already removed
+      console.warn("resetArenaState: error removing boss:", err);
+    }
     boss = null;
   }
+
   bullets = []; enemies = []; enemyBullets = []; powerups = [];
   player.position.set(0, 0.5, 0);
 
@@ -264,6 +318,7 @@ function resetArenaState() {
     floor.material.emissiveIntensity = 0;
   }
 }
+
 
 function updateUI() {
   uiHealth.textContent = health;
@@ -374,12 +429,477 @@ function createEmberParticles(enemy) {
 }
 
 
+// ---- REPLACEMENT spawnBoss (stage-aware, Ember Pit boss for stage 1) ----
+// ---- REPLACEMENT spawnBoss (Ember Pit boss with 1000 HP & slam schedule) ----
+// ---- REPLACEMENT spawnBoss (Ember Pit boss with 1000 HP & powerup scheduling) ----
+// ---- REPLACEMENT spawnBoss (Ember Pit boss with scaleFactor 3 at spawn) ----
 function spawnBoss() {
   if (boss) return;
-  boss = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 4), new THREE.MeshStandardMaterial({ color: 0x9900ff }));
-  boss.position.set(0, 2, 0);
-  scene.add(boss);
+
+  if (stage === 1) {
+    // Ember Pit boss: an animated voxel cube with embers and fire attacks + slams + powerups
+    boss = {
+      type: "ember",
+      hp: 1000,
+      hits: 0,
+      group: new THREE.Group(),
+      phase: 0,                // 0 = full, 1 = <=66%, 2 = <=33%
+      nextFire: performance.now() + 1200,
+      fireInterval: 900 + Math.random() * 600,
+      nextSlamTime: performance.now() + 4500,
+      slamTelegraphTime: 900,
+      slamIntervalBase: 7000,
+      nextPowerupTime: performance.now() + 6000,
+
+      powerupInterval: 9000, // longer baseline so boss spawns powerups ~9s by default
+
+      // visual scale factor: start at 3x for maximum menacing look
+      scaleFactor: 3
+    };
+    createEmberVoxelBoss(boss);
+    // apply visual scale immediately
+    boss.group.scale.set(boss.scaleFactor, boss.scaleFactor, boss.scaleFactor);
+    // position; updateBoss will animate the Y each frame using scaleFactor
+    boss.group.position.set(0, 1.8 * boss.scaleFactor, 0);
+    scene.add(boss.group);
+    } else if (stage === 2) {
+    // Frost Keep boss (behavior inspired by your demo)
+    boss = {
+      type: "frost",
+      hp: 500,
+      mesh: new THREE.Group(),
+      phase: 0,
+      nextShoot: performance.now() + 800,
+      shootInterval: 900,
+      nextDash: performance.now() + 4500,
+      dashInterval: 6000,
+      nextSpin: performance.now() + 8000,
+      spinInterval: 9000,
+      scaleFactor: 1.6
+    };
+
+    // build a simple frosty cube + icy glow
+    const frostMat = new THREE.MeshStandardMaterial({ color: 0x99ddff, emissive: 0x224466, emissiveIntensity: 0.6, roughness: 0.2, metalness: 0.05 });
+    const core = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.4, 2.4), frostMat);
+    core.position.set(0, 1.2, 0);
+    boss.mesh.add(core);
+
+    // add some icicle spheres for flair
+    for (let i = 0; i < 6; i++) {
+      const s = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), frostMat.clone());
+      const a = (i / 6) * Math.PI * 2;
+      s.position.set(Math.cos(a) * 2.0, 1.2 + Math.sin(a * 2) * 0.25, Math.sin(a) * 2.0);
+      boss.mesh.add(s);
+    }
+
+    boss.mesh.scale.set(boss.scaleFactor, boss.scaleFactor, boss.scaleFactor);
+    boss.mesh.position.set(0, 1.2 * boss.scaleFactor, 0);
+    scene.add(boss.mesh);
+  } else {
+    boss = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 4), new THREE.MeshStandardMaterial({ color: 0x9900ff }));
+    boss.position.set(0, 2, 0);
+    scene.add(boss);
+  }
+
 }
+
+
+
+// ---- Ember boss builder: voxels, glow, and ember particles ----
+function createEmberVoxelBoss(bossObj) {
+  const group = bossObj.group;
+  group.userData.voxels = [];
+  const voxelSize = 0.6;
+  const half = 2; // builds roughly a 5x5x3 sculpt
+
+  // Voxel material that glows and changes emissive color over time
+  const voxelMat = new THREE.MeshStandardMaterial({
+    color: 0x330000,
+    emissive: 0xff5500,
+    emissiveIntensity: 0.8,
+    roughness: 0.4,
+    metalness: 0.2
+  });
+
+  // Build a stylized "cube" boss made from small boxes
+  for (let x = -half; x <= half; x++) {
+    for (let y = -1; y <= 1; y++) {
+      for (let z = -half; z <= half; z++) {
+        // carve a somewhat hollow shape to look interesting
+        const distance = Math.abs(x) + Math.abs(z) + Math.abs(y);
+        if (distance > 5) continue;
+
+        const cube = new THREE.Mesh(new THREE.BoxGeometry(voxelSize, voxelSize, voxelSize), voxelMat.clone());
+        cube.position.set(x * (voxelSize + 0.02), y * (voxelSize + 0.02), z * (voxelSize + 0.02));
+        cube.castShadow = true;
+        cube.receiveShadow = true;
+
+        // small random scale offset and a seed for per-voxel animation
+        cube.userData.seed = Math.random() * Math.PI * 2;
+        cube.userData.baseScale = 1 + Math.random() * 0.12;
+        group.add(cube);
+        group.userData.voxels.push(cube);
+      }
+    }
+  }
+
+  // Ember particle cloud (Points) to add showmanship
+  const emberCount = 160;
+  const emberPositions = new Float32Array(emberCount * 3);
+  for (let i = 0; i < emberCount; i++) {
+    emberPositions[i * 3] = (Math.random() - 0.5) * 3.6;
+    emberPositions[i * 3 + 1] = Math.random() * 3 - 0.5;
+    emberPositions[i * 3 + 2] = (Math.random() - 0.5) * 3.6;
+  }
+  const emberGeo = new THREE.BufferGeometry();
+  emberGeo.setAttribute('position', new THREE.BufferAttribute(emberPositions, 3));
+  const emberMat = new THREE.PointsMaterial({
+    size: 0.09,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    color: 0xffaa33
+  });
+  const emberPoints = new THREE.Points(emberGeo, emberMat);
+  emberPoints.position.set(0, 0.4, 0);
+  group.add(emberPoints);
+  group.userData.particles = emberPoints;
+
+  // crown: rotating glowing spheres for dramatic flair
+  const crownCount = 6;
+  group.userData.crowns = [];
+  for (let i = 0; i < crownCount; i++) {
+    const s = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 8), new THREE.MeshStandardMaterial({
+      color: 0xffaa33,
+      emissive: 0xff4400,
+      emissiveIntensity: 0.9,
+      roughness: 0.2
+    }));
+    const angle = (i / crownCount) * Math.PI * 2;
+    s.position.set(Math.cos(angle) * 2.1, 1.1, Math.sin(angle) * 2.1);
+    group.add(s);
+    group.userData.crowns.push({ mesh: s, angle });
+  }
+}// ----------------- FROST BOSS HELPERS -----------------
+function frostDash(bossObj) {
+  // dash toward player (teleport-like fast move) with a quick pulse
+  const dir = new THREE.Vector3().subVectors(player.position, bossObj.mesh.position).setY(0).normalize();
+  // move a good chunk toward the player but clamp inside arena
+  bossObj.mesh.position.addScaledVector(dir, 10);
+  // short scale pulse for show
+  const start = performance.now(); const dur = 280;
+  (function pulse() {
+    const t = performance.now() - start;
+    const s = 1 + 0.35 * Math.sin((t / dur) * Math.PI * 2);
+    bossObj.mesh.scale.setScalar(bossObj.scaleFactor * s);
+    if (t < dur) requestAnimationFrame(pulse);
+    else bossObj.mesh.scale.setScalar(bossObj.scaleFactor);
+  })();
+}
+
+function frostSpinAttack(bossObj) {
+  // radial ice shards
+  const count = 12 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2;
+    const shard = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 6), new THREE.MeshStandardMaterial({
+      color: 0x88ccff, emissive: 0x224466, emissiveIntensity: 0.8
+    }));
+    shard.position.copy(bossObj.mesh.position);
+    shard.direction = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+    // give shards a modest outward speed and optional hit radius
+    shard.speed = 0.22 + Math.random() * 0.05;
+    shard.hitRadius = 0.55;
+    enemyBullets.push(shard);
+    scene.add(shard);
+  }
+}
+
+function frostShootSingle(bossObj) {
+  // shoot a direct shot aimed at player (low y so it hits grounded players)
+  const proj = new THREE.Mesh(new THREE.SphereGeometry(0.14, 6, 6), new THREE.MeshStandardMaterial({
+    color: 0x99eeff, emissive: 0x66aadd, emissiveIntensity: 0.9
+  }));
+  const start = bossObj.mesh.position.clone();
+  start.y = 0.8;
+  proj.position.copy(start);
+  const dir = new THREE.Vector3().subVectors(player.position, proj.position);
+  dir.y = 0; // horizontal aim
+  dir.normalize();
+  proj.direction = dir;
+  proj.speed = 0.24 + Math.random() * 0.04;
+  proj.hitRadius = 0.6;
+  enemyBullets.push(proj);
+  scene.add(proj);
+}
+
+
+// ---- Boss behavior & animation (call each frame from animate) ----
+// ---- REPLACEMENT updateBoss: phases, firing changes by phase, and slam scheduling ----
+// ---- REPLACEMENT updateBoss: phases, firing changes by phase, slam scheduling, and powerup spawn ----
+// ---- REPLACEMENT updateBoss: phases, scaleFactor (3->2->1), firing, slam, powerups ----
+function updateBoss(now, dt) {
+  if (!boss) return;
+  const isEmber = boss.type === "ember" && boss.group;
+  const isFrost = boss.type === "frost" && boss.mesh;
+
+  let center = new THREE.Vector3();
+  if (isEmber) center.copy(boss.group.position);
+  else if (boss.position) center.copy(boss.position);
+  else center.set(0, 2, 0);
+
+  // PHASE TRANSITIONS based on HP (and set scaleFactor)
+  if (boss.hp <= 1000 * (2/3) && boss.phase < 1) {
+    boss.phase = 1;
+    boss.fireInterval = Math.max(350, boss.fireInterval * 0.65);
+    boss.slamIntervalBase = Math.max(4200, boss.slamIntervalBase * 0.75);
+    boss.powerupInterval = Math.max(6000, boss.powerupInterval * 0.9);
+
+    // set visual scale to 2x (from 3x)
+    boss.scaleFactor = 2;
+    if (isEmber) {
+      boss.group.scale.set(boss.scaleFactor, boss.scaleFactor, boss.scaleFactor);
+      boss.group.traverse(n => { if (n.material && n.material.emissive) n.material.emissiveIntensity *= 1.15; });
+    }
+  }
+  if (boss.hp <= 1000 * (1/3) && boss.phase < 2) {
+    boss.phase = 2;
+    boss.fireInterval = Math.max(220, boss.fireInterval * 0.55);
+    boss.slamIntervalBase = Math.max(2600, boss.slamIntervalBase * 0.6);
+    boss.powerupInterval = Math.max(4500, boss.powerupInterval * 0.85);
+
+    // set visual scale to 1x (from 2x)
+    boss.scaleFactor = 1;
+    if (isEmber) {
+      boss.group.scale.set(boss.scaleFactor, boss.scaleFactor, boss.scaleFactor);
+      boss.group.traverse(n => { if (n.material && n.material.emissive) n.material.emissiveIntensity *= 1.18; });
+    }
+  }
+
+  // Animate voxels, particles, crown (use scaleFactor to boost Y offsets so larger boss floats properly)
+  if (isEmber) {
+    const t = now * 0.002;
+    const voxels = boss.group.userData.voxels || [];
+    const sf = boss.scaleFactor || 1;
+    for (let i = 0; i < voxels.length; i++) {
+      const v = voxels[i];
+      const s = 1 + Math.sin(t + v.userData.seed) * (0.06 + boss.phase * 0.02);
+      v.scale.setScalar(v.userData.baseScale * s);
+      const mat = v.material;
+      if (mat && mat.emissive) {
+        mat.emissiveIntensity = 0.6 + Math.abs(Math.sin(t * (0.8 + boss.phase * 0.25) + v.userData.seed)) * (0.9 + boss.phase * 0.25);
+      }
+      // small bob scaled by boss size so detail matches
+      v.position.y += Math.sin(t * (0.4 + boss.phase * 0.04) + v.userData.seed) * 0.001 * sf;
+    }
+    boss.group.rotation.y += dt * (0.3 + boss.phase * 0.12);
+    // vertical float scaled by size so bigger boss floats higher
+    boss.group.position.y = (1.8 * sf) + Math.sin(now * 0.001 * (1 + boss.phase * 0.15)) * (0.28 * sf);
+
+    const positions = boss.group.userData.particles.geometry.attributes.position.array;
+    for (let p = 0; p < positions.length; p += 3) {
+      positions[p + 1] += 0.002 + Math.random() * (0.002 + boss.phase * 0.0015);
+      if (positions[p + 1] > 2.4) positions[p + 1] = -0.5;
+    }
+    boss.group.userData.particles.geometry.attributes.position.needsUpdate = true;
+
+    boss.group.userData.crowns.forEach(c => {
+      c.angle += dt * (0.8 + boss.phase * 0.35);
+      c.mesh.position.x = Math.cos(c.angle) * (2.1 * sf);
+      c.mesh.position.z = Math.sin(c.angle) * (2.1 * sf);
+      c.mesh.position.y = (1.1 * sf) + Math.sin(now * 0.003 + c.angle) * 0.15 * sf;
+      c.mesh.material.emissiveIntensity = 0.9 + Math.abs(Math.sin(now * 0.006 + c.angle)) * (0.8 + boss.phase * 0.5);
+    });
+  } else {
+    if (boss.rotation) boss.rotation.y += dt * 0.6;
+  }
+  // ---- FROST boss behavior: single shots, dashes, spin radial attacks ----
+  if (isFrost) {
+    // single aimed shots
+    if (now >= boss.nextShoot) {
+      frostShootSingle(boss);
+      boss.nextShoot = now + Math.max(420, boss.shootInterval + (Math.random() * 300 - boss.phase * 120));
+    }
+
+    // dash toward player (telegraphed by a brief pause handled by dash function itself)
+    if (now >= boss.nextDash) {
+      frostDash(boss);
+      boss.nextDash = now + boss.dashInterval + Math.random() * 1200;
+    }
+
+    // spin radial attack
+    if (now >= boss.nextSpin) {
+      frostSpinAttack(boss);
+      boss.nextSpin = now + boss.spinInterval + Math.random() * 1400;
+    }
+
+    // simple gentle idle rotation for style
+    boss.mesh.rotation.y += dt * (0.25 + boss.phase * 0.08);
+
+    // Update center variable to frost mesh position so other code uses correct center
+    center.copy(boss.mesh.position);
+  }
+
+  // Boss firing (alternating ground/high), unchanged except it uses center computed above
+  if (isEmber) {
+    if (now >= boss.nextFire) {
+      if (typeof boss.fireToggle === "undefined") boss.fireToggle = false;
+      const aimAtPlayerY = boss.fireToggle;
+      boss.fireToggle = !boss.fireToggle;
+      const volley = 3 + Math.floor(Math.random() * (3 + boss.phase * 2));
+      for (let i = 0; i < volley; i++) spawnEmberFireball(center, aimAtPlayerY);
+      boss.nextFire = now + Math.max(180, boss.fireInterval + (Math.random() * 400 - boss.phase * 120));
+    }
+  }
+
+  // SCHEDULE GROUND SLAM
+  if (isEmber) {
+    const interval = boss.slamIntervalBase * (1 - boss.phase * 0.25);
+    if (now >= boss.nextSlamTime) {
+      const slamPos = center.clone();
+      const slamRadius = (3 + boss.phase * 1.8) * (boss.scaleFactor || 1) * 0.9; // scale slam radius slightly with boss
+      spawnSlamTelegraph(slamPos, slamRadius, boss.slamTelegraphTime);
+      setTimeout(() => { doGroundSlam(slamPos, slamRadius); }, boss.slamTelegraphTime);
+      boss.nextSlamTime = now + interval + 600 + Math.random() * 1200;
+    }
+  }
+
+  // spawn powerups while boss alive (unchanged)
+  if (isEmber) {
+    if (!boss.nextPowerupTime) boss.nextPowerupTime = now + 2000;
+    if (now >= boss.nextPowerupTime) {
+      spawnPowerup();
+      boss.nextPowerupTime = now + boss.powerupInterval * (1 - boss.phase * 0.18);
+    }
+  }
+}
+
+
+
+
+// ---- Ember boss projectile spawner ----
+// ---- updated spawnEmberFireball: accepts aimAtPlayerY (true=aim at player's current Y, false=ground level) ----
+function spawnEmberFireball(origin, aimAtPlayerY = false) {
+  // choose start height depending on mode
+  const start = origin.clone();
+  if (aimAtPlayerY) {
+    // high shot aimed at player's current Y (good for hitting jumping players)
+    start.y = origin.y + 0.6;
+  } else {
+    // ground-level shot that travels low to hit grounded players
+    start.y = 0.6; // near ground
+  }
+
+  const fire = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 8, 8),
+    new THREE.MeshStandardMaterial({ color: 0xff6600, emissive: 0xff3300, emissiveIntensity: 0.9 })
+  );
+  fire.position.copy(start);
+
+  // compute direction: if aimAtPlayerY true, aim directly at player (including vertical),
+  // otherwise aim at player's ground projection (zero Y) so it travels low.
+  const dir = new THREE.Vector3().subVectors(player.position, fire.position);
+  if (!aimAtPlayerY) {
+    dir.y = 0; // force horizontal
+  }
+  dir.normalize();
+
+  fire.direction = dir;
+  fire.speed = 0.16 + Math.random() * 0.05;
+  enemyBullets.push(fire);
+  scene.add(fire);
+}
+// ---- TELEGRAPH: show a red ring on the floor, then slam ----
+function spawnSlamTelegraph(pos, radius, telegraphMs) {
+  // Ring mesh slightly above floor
+  const ringGeo = new THREE.RingGeometry(radius * 0.85, radius, 32);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xff2200, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(pos.x, 0.52, pos.z);
+  ring.userData.spawn = performance.now();
+  scene.add(ring);
+
+  // animate a "pulse" by scaling from 0.6 -> 1 over telegraph time
+  const start = performance.now();
+  const id = setInterval(() => {
+    const now = performance.now();
+    const elapsed = now - start;
+    const t = Math.min(1, elapsed / telegraphMs);
+    ring.scale.setScalar(0.6 + 0.4 * t);
+    ring.material.opacity = 0.45 + 0.25 * Math.sin(t * Math.PI);
+    if (t >= 1) {
+      clearInterval(id);
+      // leave the ring for a tiny moment if needed; remove after telegraph finishes
+      setTimeout(() => { scene.remove(ring); }, 120);
+    }
+  }, 16);
+
+  // no return required
+}
+
+// ---- slam impact: damage player if inside and spawn fire shards ----
+function doGroundSlam(pos, radius) {
+  // visual explosion: spawn many ember shards outward
+  const shardCount = 20 + Math.floor(Math.random() * 30);
+  for (let i = 0; i < shardCount; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = Math.random() * radius * 1.2;
+    const shard = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 0.18, 0.18),
+      new THREE.MeshStandardMaterial({ color: 0xff6622, emissive: 0xff3300, emissiveIntensity: 1 })
+    );
+    shard.position.set(pos.x + Math.cos(ang) * dist, 0.6 + Math.random() * 0.6, pos.z + Math.sin(ang) * dist);
+    scene.add(shard);
+    // quick scatter animation
+    const vx = (Math.cos(ang) * (0.02 + Math.random() * 0.12));
+    const vz = (Math.sin(ang) * (0.02 + Math.random() * 0.12));
+    const id = setInterval(() => {
+      shard.position.x += vx;
+      shard.position.y -= 0.02 + Math.random() * 0.02;
+      shard.position.z += vz;
+    }, 16);
+    // schedule removal
+    setTimeout(() => { clearInterval(id); scene.remove(shard); }, 900 + Math.random() * 800);
+  }
+
+  // damage player if they stand within the slam radius
+  // damage player if they stand within the slam radius
+const distToPlayer = Math.hypot(player.position.x - pos.x, player.position.z - pos.z);
+
+if (distToPlayer <= radius + 0.6) {
+  // ALWAYS apply a pushback so the slam feels real even if player is invincible
+  const push = new THREE.Vector3(player.position.x - pos.x, 0, player.position.z - pos.z)
+    .normalize()
+    .multiplyScalar(1.0 + (boss ? boss.phase * 0.5 : 0));
+  player.position.add(push);
+
+  // Apply damage only when NOT invincible
+  if (!isInvincible()) {
+    health = Math.max(0, health - 1); // 1 damage per slam hit
+    uiHealth.textContent = health;
+
+    // start 3s invincibility after taking damage
+    if (health > 0) startInvincibility(3000);
+
+    if (health <= 0) {
+      gameOver = true;
+      gameOverDiv.style.display = "block";
+    }
+  }
+  // If invincible: push happened above but no health lost
+}
+
+
+
+}
+
+
+
+
+
+
 
 function shoot() {
   if (!canShoot || inOverworld) return;
@@ -464,19 +984,31 @@ if (player.position.y <= 0.5) {     // ground level (player half height)
   });
 
   enemyBullets.forEach((b, i) => {
-    b.position.addScaledVector(b.direction, 0.15);
-    if (b.position.distanceTo(player.position) < 0.7) {
-      scene.remove(b); enemyBullets.splice(i, 1);
-      health--; uiHealth.textContent = health;
+  b.position.addScaledVector(b.direction, 0.15);
+  if (b.position.distanceTo(player.position) < 0.7) {
+    // remove the bullet (it hit)
+    scene.remove(b); enemyBullets.splice(i, 1);
+
+    // apply damage only if player is NOT invincible
+    if (!isInvincible()) {
+      health--;
+      uiHealth.textContent = health;
+
+      // start 3s invincibility when hit (only if still alive)
+      if (health > 0) startInvincibility(3000);
+
       if (health <= 0) {
         gameOver = true;
         gameOverDiv.style.display = "block";
       }
     }
-    if (b.position.length() > 100) {
-      scene.remove(b); enemyBullets.splice(i, 1);
-    }
-  });
+    // if player is invincible, bullet hits but causes no damage
+  }
+  if (b.position.length() > 100) {
+    scene.remove(b); enemyBullets.splice(i, 1);
+  }
+});
+
 
   enemies.forEach((e, i) => {
   // Existing movement code...
@@ -520,18 +1052,144 @@ if (player.position.y <= 0.5) {     // ground level (player half height)
 
 
   if (boss) {
-    bullets.forEach((b, i) => {
-      if (b.position.distanceTo(boss.position) < 2) {
-        scene.remove(b); bullets.splice(i, 1);
-        boss.hits = (boss.hits || 0) + 1;
-        if (boss.hits >= 20) {
-          scene.remove(boss);
-          boss = null;
-          advanceStage();
+  // update boss animation & behavior
+  updateBoss(now, dt);
+// --- CHECK: boss body collision -> ALWAYS pushback, but damage only when not invincible ---
+if (boss) {
+  // support ember (boss.group), frost (boss.mesh), or fallback (boss.position)
+  let bossPos = null;
+  if (boss.group) bossPos = boss.group.position;
+  else if (boss.mesh) bossPos = boss.mesh.position;
+  else if (boss.position) bossPos = boss.position;
+
+  // if we couldn't resolve a position, skip this check safely
+  if (bossPos) {
+    const baseBodyRadius = boss.group ? 2.4 : (boss.mesh ? 2.6 : 2.0);
+    const bodyRadius = baseBodyRadius * (boss.scaleFactor || 1);
+
+    const distToBoss = player.position.distanceTo(bossPos);
+    if (distToBoss < bodyRadius + 0.8) {
+      // ALWAYS push the player away from the boss so collisions feel real
+      const push = new THREE.Vector3().subVectors(player.position, bossPos).setY(0).normalize()
+        .multiplyScalar(1.0 + (boss.phase || 0) * 0.5);
+      player.position.add(push);
+
+      // Damage only if NOT invincible
+      if (!isInvincible()) {
+        health = Math.max(0, health - 1);
+        uiHealth.textContent = health;
+
+        // start temporary invincibility after body hit
+        if (health > 0) startInvincibility(3000);
+
+        if (health <= 0) {
+          gameOver = true;
+          gameOverDiv.style.display = "block";
         }
       }
-    });
-  }
+      // if invincible: push occurred above, but no damage applied
+    }
+  } // end skip-if-no-bossPos
+}
+
+
+
+    // collision: player bullets -> boss
+  bullets.forEach((b, i) => {
+    if (!boss) return;
+
+    // Resolve boss world position and a sensible hit radius for different boss shapes
+    let bossPos = null;
+    let hitRadius = 2;
+    if (boss.group) {
+      bossPos = boss.group.position;
+      hitRadius = 2.4;
+    } else if (boss.mesh) {
+      bossPos = boss.mesh.position;
+      // frost mesh is visually larger, scale its radius with scaleFactor
+      hitRadius = 2.4 * (boss.scaleFactor || 1);
+    } else if (boss.position) {
+      bossPos = boss.position;
+      hitRadius = 2.0;
+    }
+
+    // If we found a boss position, do collision test
+    if (bossPos && b.position.distanceTo(bossPos) < hitRadius) {
+      // remove bullet
+      scene.remove(b);
+      bullets.splice(i, 1);
+
+      // Apply damage if this boss supports hp
+      if (typeof boss.hp === "number") {
+        const damage = 6 + Math.floor(Math.random() * 6);
+        boss.hits = (boss.hits || 0) + 1;
+        boss.hp = boss.hp - damage;
+      } else if (boss.isMesh) {
+        // fallback: a raw mesh boss with no hp — destroy it immediately
+        scene.remove(boss);
+        boss = null;
+      }
+
+      // Ember hit flash (if ember group exists) — keep visual feedback
+      if (boss && boss.group) {
+        boss.group.traverse(node => {
+          if (node.material && node.material.emissive) {
+            node.material.emissiveIntensity = Math.min((node.material.emissiveIntensity || 0.8) + 0.6, 2.4);
+            setTimeout(() => {
+              if (node.material && node.material.emissive) node.material.emissiveIntensity = Math.max((node.material.emissiveIntensity || 1) - 0.5, 0.4);
+            }, 140);
+          }
+        });
+      }
+
+      // Boss death check & proper removal for each boss type
+      if (!boss || (typeof boss.hp === "number" && boss.hp <= 0)) {
+        // store a reference for removal/visuals before clearing boss
+        if (boss) {
+          if (boss.group) {
+            // scatter and remove voxels (existing behavior)
+            boss.group.traverse(node => {
+              if (node.isMesh && node.geometry && node.geometry.type === "BoxGeometry") {
+                const worldPos = new THREE.Vector3();
+                node.getWorldPosition(worldPos);
+                const v = new THREE.Mesh(node.geometry.clone(), node.material.clone());
+                v.position.copy(worldPos);
+                scene.add(v);
+                const up = new THREE.Vector3((Math.random()-0.5)*2, 0.6 + Math.random()*1.2, (Math.random()-0.5)*2);
+                const fadeStart = performance.now();
+                (function animateScatter(mesh, start, dir) {
+                  const id = setInterval(() => {
+                    const tt = (performance.now() - start) / 1000;
+                    mesh.position.addScaledVector(dir, 0.06);
+                    if (tt > 1.3) {
+                      scene.remove(mesh);
+                      clearInterval(id);
+                    }
+                  }, 16);
+                })(v, fadeStart, up);
+              }
+            });
+            scene.remove(boss.group);
+          } else if (boss.mesh) {
+            // remove frost mesh
+            scene.remove(boss.mesh);
+          } else {
+            // fallback: boss might be a raw mesh reference
+            try { scene.remove(boss); } catch (err) { /* ignore */ }
+          }
+        }
+
+        // clear boss object and reward player
+        boss = null;
+        score += 10;
+        uiScore.textContent = score;
+        advanceStage();
+      }
+    }
+  });
+
+}
+
 
   if (enemies.length === 0 && !boss) {
     if (wave < stageWaveCounts[stage - 1]) {
@@ -548,8 +1206,11 @@ if (player.position.y <= 0.5) {     // ground level (player half height)
     if (p.position.distanceTo(player.position) < 1) {
       scene.remove(p); powerups.splice(i, 1);
       if (p.powerType === "health") {
-        health = Math.min(health + 1, 5); uiHealth.textContent = health;
-      } else if (p.powerType === "rapid") {
+  // allow a max health of 10 now (was 5)
+  health = Math.min(health + 1, 10);
+  uiHealth.textContent = health;
+}
+ else if (p.powerType === "rapid") {
         shootCooldown = 100;
         powerupTimer = Date.now() + 5000;
       }
