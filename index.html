@@ -282,32 +282,52 @@ function startStage(selectedStage) {
 }
 
 function resetArenaState() {
-  // remove any bullets/enemies/powerups from scene
-  bullets.forEach(b => scene.remove(b));
-  enemies.forEach(e => scene.remove(e));
-  enemyBullets.forEach(e => scene.remove(e));
-  powerups.forEach(p => scene.remove(p));
+  // remove any bullets/enemies/powerups from scene (safe-guarded)
+  bullets.forEach(b => { try { scene.remove(b); } catch(e){} });
+  enemies.forEach(e => { try { scene.remove(e); } catch(e){} });
+  enemyBullets.forEach(e => { try { scene.remove(e); } catch(e){} });
+  powerups.forEach(p => { try { scene.remove(p); } catch(e){} });
 
-  // remove boss (supports boss.group or raw Mesh)
+  // remove boss visuals safely (handle boss.group, boss.mesh, or raw mesh)
   if (boss) {
     try {
       if (boss.group) {
-        scene.remove(boss.group);
+        try { scene.remove(boss.group); } catch(e) {}
+        // also try to dispose child geometries/materials if present (best-effort)
+        try {
+          boss.group.traverse(n => {
+            if (n.geometry) { n.geometry.dispose && n.geometry.dispose(); }
+            if (n.material) { n.material.dispose && n.material.dispose(); }
+          });
+        } catch(e){}
+      } else if (boss.mesh) {
+        try { scene.remove(boss.mesh); } catch(e) {}
+        try {
+          boss.mesh.traverse(n => {
+            if (n.geometry) { n.geometry.dispose && n.geometry.dispose(); }
+            if (n.material) { n.material.dispose && n.material.dispose(); }
+          });
+        } catch(e){}
       } else {
-        scene.remove(boss);
+        // fallback: remove raw mesh reference if it exists
+        try { scene.remove(boss); } catch(e) {}
       }
     } catch (err) {
       // ignore if already removed
       console.warn("resetArenaState: error removing boss:", err);
+    } finally {
+      boss = null;
     }
-    boss = null;
   }
 
+  // clear arrays (reset state)
   bullets = []; enemies = []; enemyBullets = []; powerups = [];
+
+  // reset player position
   player.position.set(0, 0.5, 0);
 
   // Update floor material color based on stage
-  if(stage === 1){
+  if (stage === 1) {
     floor.material.color.set(0x330000);
     floor.material.emissive.set(0x662200);
     floor.material.emissiveIntensity = 0.5;
@@ -318,6 +338,7 @@ function resetArenaState() {
     floor.material.emissiveIntensity = 0;
   }
 }
+
 
 
 function updateUI() {
@@ -1401,3 +1422,4 @@ function closeSettings() {
 </script>
 </body>
 </html>
+
